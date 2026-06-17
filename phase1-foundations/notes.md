@@ -33,7 +33,7 @@ _Open questions once answered, with a one-line summary of the resolution and whe
 
 _Non-obvious takeaways worth remembering. Aim for "the thing I wish someone had told me" rather than restating what was in the video._
 
-- _(none yet)_
+- **When gradients look wrong, sanity-check the forward first.** Hit this debugging `tanh` in micrograd — silently used `math.tan` (trig) instead of `math.tanh` (hyperbolic). The local-derivative formula `1 − out.x²` was correct; the upstream `out.x` was garbage. Generalizable rule: before suspecting backward, print the forward output and check against a known value (e.g. `tanh(0.8) ≈ 0.6640`). Cheaper than reasoning about chain rule.
 
 ## Experiments
 

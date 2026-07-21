@@ -10,19 +10,39 @@ class Value:
     def __repr__(self):
         return f"{self.__class__.__name__}({self.x})"
     def __add__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
         out = Value(self.x + other.x, (self, other), '+')
         def _backward():
            self.grad += 1.0 * out.grad
            other.grad += 1.0 * out.grad
         out._backward = _backward
         return out
+    def __radd__(self, other):   # other + self
+        return self + other
+    def __sub__(self, other):
+        return self + (-other)
     def __mul__(self, other):
+        other = other if isinstance(other, Value) else Value(other)
         out = Value(self.x * other.x, (self, other), '*')
         def _backward():
             self.grad += other.x * out.grad
             other.grad += self.x * out.grad
         out._backward = _backward
         return out
+    def __rmul__(self, other):   # other * self
+        return self * other
+    def __truediv__(self, other):
+        return self * (other ** -1)
+    def __pow__(self, other):
+        if not isinstance(other, int) and not isinstance(other, float):
+            raise ValueError("You can only take int/float power of a number with this op")
+        out = Value(self.x ** other, (self,), '**')
+        def _backward():
+            self.grad += other * (self.x ** (other - 1)) * out.grad
+        out._backward = _backward
+        return out
+    def __neg__(self):       
+        return self * -1
     def tanh(self):
         out = Value(math.tanh(self.x), (self,), 'tanh')
         def _backward():

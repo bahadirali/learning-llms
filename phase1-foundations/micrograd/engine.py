@@ -66,11 +66,11 @@ class Value:
 
     
     
-a = Value(0.8)
-b = a.tanh()
-b.backward()
-# Expected: b.x ≈ 0.6640, a.grad ≈ 1 - 0.6640**2 ≈ 0.5591
-print(b.x, a.grad)
+# a = Value(0.8)
+# b = a.tanh()
+# b.backward()
+# # Expected: b.x ≈ 0.6640, a.grad ≈ 1 - 0.6640**2 ≈ 0.5591
+# print(b.x, a.grad)
 
 
 

@@ -34,6 +34,7 @@ _Open questions once answered, with a one-line summary of the resolution and whe
 _Non-obvious takeaways worth remembering. Aim for "the thing I wish someone had told me" rather than restating what was in the video._
 
 - **When gradients look wrong, sanity-check the forward first.** Hit this debugging `tanh` in micrograd — silently used `math.tan` (trig) instead of `math.tanh` (hyperbolic). The local-derivative formula `1 − out.x²` was correct; the upstream `out.x` was garbage. Generalizable rule: before suspecting backward, print the forward output and check against a known value (e.g. `tanh(0.8) ≈ 0.6640`). Cheaper than reasoning about chain rule.
+- **Count-based MLE and gradient descent are two roads to the same model.** The count bigram normalizes `N` row-wise to get `P`; a 27→27 neural net (`bigram_nn.py`) trained on NLL converges to the *same* ~2.45 loss. Not a coincidence: normalizing counts *is* the closed-form maximum-likelihood estimate (provable via a Lagrange multiplier on the per-row `Σθ=1` constraint), and the net is minimizing that same NLL by gradient descent — so it rediscovers the MLE. Takeaway: "count and normalize" and "define a loss and optimize" are the same objective wearing different clothes; the neural framing only pays off once the model needs more context than counting can capture (part 2). Loss floor of a pure bigram is ~2.45 nats (perplexity ≈ 11.6) — the bar for later models.
 
 ## Experiments
 

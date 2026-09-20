@@ -92,3 +92,9 @@ logits = h @ W2 + b2
 loss = F.cross_entropy(logits, Ydev)
 print('dev', loss.item())
 
+emb = C[Xte]
+h = torch.tanh(emb.view(-1, block_size * emb_dim) @ W1 + b1)
+loss = F.cross_entropy(h @ W2 + b2, Yte)
+print('test', loss.item())
+
+

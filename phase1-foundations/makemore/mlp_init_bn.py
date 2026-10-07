@@ -2,6 +2,8 @@ import os
 import torch
 import torch.nn.functional as F
 import random
+import math
+
 
 
 def build_dataset(words):
@@ -37,7 +39,6 @@ emb_dim = 10
 n_hidden = 200
 C = torch.randn((27,emb_dim))
 W1 = torch.randn((block_size * emb_dim, n_hidden)) * (5/3) / (30**0.5)
-b1 = torch.randn(n_hidden) * 0.01
 bngain = torch.ones((1, n_hidden))
 bnbias = torch.zeros((1, n_hidden))
 bnmean_running = torch.zeros((1, n_hidden))
@@ -45,17 +46,18 @@ bnstd_running  = torch.ones((1, n_hidden))
 W2 = torch.randn((n_hidden, 27)) * 0.01
 b2 = torch.randn(27) * 0
 
-parameters = [C, W1, b1, bngain, bnbias, W2, b2]
+parameters = [C, W1, bngain, bnbias, W2, b2]
 for p in parameters:
     p.requires_grad = True
 
-
+ud = [] #update-to-data-ratio
+#training
 for k in range(100000):
     ix = torch.randint(0, Xtr.shape[0], (64,)) # 64 random example indices
     # forward
     emb = C[Xtr[ix]] # index X by ix
 
-    hpreact = emb.view(-1, block_size * emb_dim) @ W1 + b1
+    hpreact = emb.view(-1, block_size * emb_dim) @ W1
     bnmeani = hpreact.mean(0, keepdim=True)
     bnstdi  = hpreact.std(0, keepdim=True)
     hpreact = bngain * (hpreact - bnmeani) / bnstdi + bnbias
@@ -75,7 +77,13 @@ for k in range(100000):
     lr = 0.1 if k < 70000 else 0.01
     for p in parameters:
         p.data += -lr * p.grad
+    with torch.no_grad():
+        ud.append([(lr * p.grad).std().item() / p.data.std().item() for p in parameters])
     print(loss.item())
+
+for i, p in enumerate(parameters):
+    avg = sum(row[i] for row in ud) / len(ud)
+    print(i, tuple(p.shape), round(math.log10(avg), 2))
 
 
 with torch.no_grad():
@@ -86,7 +94,7 @@ with torch.no_grad():
         context = [0] * block_size
         while True:
             emb = C[torch.tensor([context])]
-            hpreact = emb.view(1, -1) @ W1 + b1
+            hpreact = emb.view(1, -1) @ W1
             hpreact = bngain * (hpreact - bnmean_running) / bnstd_running + bnbias
             h = torch.tanh(hpreact)
             logits = h @ W2 + b2
@@ -100,7 +108,7 @@ with torch.no_grad():
 
     #train eval
     emb = C[Xtr]
-    hpreact = emb.view(-1, block_size * emb_dim) @ W1 + b1
+    hpreact = emb.view(-1, block_size * emb_dim) @ W1
     hpreact = bngain * (hpreact - bnmean_running) / bnstd_running + bnbias
     h = torch.tanh(hpreact)
     loss = F.cross_entropy(h @ W2 + b2, Ytr)
@@ -108,7 +116,7 @@ with torch.no_grad():
 
     #dev eval
     emb = C[Xdev]
-    hpreact = emb.view(-1, block_size * emb_dim) @ W1 + b1
+    hpreact = emb.view(-1, block_size * emb_dim) @ W1
     hpreact = bngain * (hpreact - bnmean_running) / bnstd_running + bnbias
     h = torch.tanh(hpreact)
     logits = h @ W2 + b2
@@ -117,7 +125,7 @@ with torch.no_grad():
 
     #test eval
     emb = C[Xte]
-    hpreact = emb.view(-1, block_size * emb_dim) @ W1 + b1
+    hpreact = emb.view(-1, block_size * emb_dim) @ W1
     hpreact = bngain * (hpreact - bnmean_running) / bnstd_running + bnbias
     h = torch.tanh(hpreact)
     loss = F.cross_entropy(h @ W2 + b2, Yte)

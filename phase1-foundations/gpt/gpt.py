@@ -3,13 +3,44 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+n_embd = 32
+block_size = 8
+batch_size = 32
+
+class Head(nn.Module):
+    def __init__(self, head_size):
+        super().__init__()
+        self.key   = nn.Linear(n_embd, head_size, bias=False)
+        self.query = nn.Linear(n_embd, head_size, bias=False)
+        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+
+    def forward(self, x):
+        B, T, C = x.shape
+        k = self.key(x)                                   # (B, T, head_size)
+        q = self.query(x)                                 # (B, T, head_size)
+        wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5 # (B, T, T)
+        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = F.softmax(wei, dim=-1)
+        v = self.value(x)                                 # (B, T, head_size)
+        out = wei @ v                                      # (B, T, head_size)
+        return out
+
 class BigramLanguageModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
-        self.token_embedding_table = nn.Embedding(vocab_size, vocab_size)
+        self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
+        self.position_embedding_table = nn.Embedding(block_size, n_embd)
+        self.sa_head = Head(n_embd)
+        self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
-        logits = self.token_embedding_table(idx)
+        B, T = idx.shape
+        tok_emb = self.token_embedding_table(idx)       # (B, T, n_embd)
+        pos_emb = self.position_embedding_table(torch.arange(T)) # (T, n_embd)
+        x = tok_emb + pos_emb       # (B, T, n_embd)
+        x = self.sa_head(x)          # (B, T, n_embd)  ← apply self-attention
+        logits = self.lm_head(x)     # (B, T, vocab_size)
         if targets is None:
             loss = None
         else:
@@ -30,9 +61,6 @@ class BigramLanguageModel(nn.Module):
 
 
 
-block_size = 8
-batch_size = 32
-
 def get_batch(split):
     data = train_data if split == 'train' else val_data
     ix = torch.randint(len(data) - block_size, (batch_size,))
@@ -40,6 +68,20 @@ def get_batch(split):
     y = torch.stack([data[i+1:i+block_size+1] for i in ix])
     return x, y
 
+
+@torch.no_grad()
+def estimate_loss():
+    out = {}
+    model.eval()
+    for split in ['train', 'val']:
+        losses = torch.zeros(200)
+        for k in range(200):
+            X, Y = get_batch(split)
+            logits, loss = model(X, Y)
+            losses[k] = loss.item()
+        out[split] = losses.mean()
+    model.train()
+    return out
 
 
 path = os.path.join(os.path.dirname(__file__), 'input.txt')
@@ -65,6 +107,9 @@ model = BigramLanguageModel(vocab_size)
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 
 for step in range(10000):
+    if step % 1000 == 0:
+        losses = estimate_loss()
+        print(f"step {step}: train {losses['train']:.4f}, val {losses['val']:.4f}")
     xb, yb = get_batch('train')
     logits: torch.Tensor
     loss: torch.Tensor

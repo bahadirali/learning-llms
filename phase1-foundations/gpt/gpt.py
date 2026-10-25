@@ -6,6 +6,7 @@ from torch.nn import functional as F
 n_embd = 32
 block_size = 8
 batch_size = 32
+dropout = 0.2
 
 class Head(nn.Module):
     def __init__(self, head_size):
@@ -13,6 +14,7 @@ class Head(nn.Module):
         self.key   = nn.Linear(n_embd, head_size, bias=False)
         self.query = nn.Linear(n_embd, head_size, bias=False)
         self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.dropout = nn.Dropout(dropout)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
 
     def forward(self, x):
@@ -22,6 +24,7 @@ class Head(nn.Module):
         wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5 # (B, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         wei = F.softmax(wei, dim=-1)
+        wei = self.dropout(wei)
         v = self.value(x)                                 # (B, T, head_size)
         out = wei @ v                                      # (B, T, head_size)
         return out
@@ -30,17 +33,22 @@ class MultiHeadAttention(nn.Module):
     def __init__(self, num_heads, head_size):
         super().__init__()
         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
+        self.proj = nn.Linear(n_embd, n_embd)
+        self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
-        return torch.cat([h(x) for h in self.heads], dim=-1)   # concat along channels
-
+        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = self.dropout(self.proj(out))
+        return out
+    
 class FeedForward(nn.Module):
     def __init__(self, n_embd):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(n_embd, 4 * n_embd),
-            nn.ReLU(),
+            nn.ReLU(),            
             nn.Linear(4 * n_embd, n_embd),
+            nn.Dropout(dropout),
         )
 
     def forward(self, x):
@@ -60,7 +68,7 @@ class Block(nn.Module):
         x = x + self.ffwd(self.ln2(x))   # feed-forward, residual, pre-normed
         return x
 
-class BigramLanguageModel(nn.Module):
+class GPTLanguageModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
@@ -141,7 +149,7 @@ train_data = data[:n]
 val_data = data[n:]
 
 
-model = BigramLanguageModel(vocab_size)
+model = GPTLanguageModel(vocab_size)
 
 optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
 

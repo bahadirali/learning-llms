@@ -99,7 +99,8 @@ class GPTLanguageModel(nn.Module):
 
     def generate(self, idx, max_new_tokens):
         for _ in range(max_new_tokens):
-            logits, loss = self(idx)              # (B, T, C)
+            idx_cond = idx[:, -block_size:]       # crop to last block_size tokens
+            logits, loss = self(idx_cond)
             logits = logits[:, -1, :]             # take last time step -> (B, C)
             probs = F.softmax(logits, dim=-1)     # (B, C)
             idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
@@ -166,3 +167,6 @@ for step in range(10000):
     optimizer.step()
 
 print(loss.item())
+
+idx = torch.zeros((1, 1), dtype=torch.long)
+print(decode(model.generate(idx, max_new_tokens=300)[0].tolist()))

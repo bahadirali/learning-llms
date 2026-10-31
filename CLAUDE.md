@@ -39,19 +39,21 @@ Six-phase roadmap. Source PDF: `llm_roadmap.pdf` in the repo root (if committed)
 | 5 | Post-training: SFT, RLHF, DPO, GRPO |
 | 6 | Inference optimization & modern architecture variants |
 
-**Currently in: Phase 1.**
+**Currently in: Phase 2.** (Phase 1 complete.)
 
-### Phase 1 plan
+### Phase 1 plan — DONE
 
-Working through Karpathy's Zero to Hero in this order, with math refreshed just-in-time rather than front-loaded:
+Worked through Karpathy's Zero to Hero in this order, with math refreshed just-in-time rather than front-loaded:
 
-1. micrograd — autograd as a DAG of local gradients
-2. makemore part 1 (bigrams)
-3. makemore part 2 (MLP, Bengio 2003)
-4. makemore part 3 (BatchNorm, activations, gradients, init) — highest-leverage video for architecture-tweaking goals
-5. makemore part 4 (manual backprop) — optional reimplementation
-6. makemore part 5 (WaveNet)
-7. Build GPT from scratch — bridge into Phase 2
+1. ✅ micrograd — autograd as a DAG of local gradients (`micrograd/`, PyTorch parity test)
+2. ✅ makemore part 1 (bigrams) — count model + neural bigram (`makemore/bigram*.py`)
+3. ✅ makemore part 2 (MLP, Bengio 2003) — `makemore/mlp.py`, test loss ~2.17
+4. ✅ makemore part 3 (BatchNorm, activations, gradients, init) — `makemore/mlp_init_bn.py`
+5. ⏭️ makemore part 4 (manual backprop) — skipped (optional; micrograd already covered hand-backprop)
+6. ⏭️ makemore part 5 (WaveNet) — skipped for now (may revisit for the nn.Module refactor pattern)
+7. ✅ Build GPT from scratch — `gpt/gpt.py`, char-level transformer, val loss 1.62, generates Shakespeare
+
+Result: full stack from autograd up to a working GPT, every component hand-built. Insights logged in `phase1-foundations/notes.md`.
 
 Math refreshers to do before/during, not as a separate block:
 - Cross-entropy as −𝔼[log p(x)] and equivalence to NLL for one-hot targets

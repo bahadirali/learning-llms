@@ -3,10 +3,18 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
-n_embd = 32
-block_size = 8
 batch_size = 32
+block_size = 128
+n_embd = 192
+n_head = 6
+n_layer = 6
 dropout = 0.2
+learning_rate = 3e-4
+max_iters = 5000
+eval_interval = 500
+eval_iters = 200
+device = 'cuda' if torch.cuda.is_available() else 'cpu'
+
 
 class Head(nn.Module):
     def __init__(self, head_size):
@@ -74,17 +82,15 @@ class GPTLanguageModel(nn.Module):
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            Block(n_embd, n_head=4),
-            nn.LayerNorm(n_embd),      # final norm before the readout
-        )   
+            *[Block(n_embd, n_head) for _ in range(n_layer)],
+            nn.LayerNorm(n_embd),
+        )
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
         tok_emb = self.token_embedding_table(idx)       # (B, T, n_embd)
-        pos_emb = self.position_embedding_table(torch.arange(T)) # (T, n_embd)
+        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, n_embd)
         x = tok_emb + pos_emb        # (B, T, 32)
         x = self.blocks(x)           # (B, T, 32) — 3 transformer blocks
         logits = self.lm_head(x)
@@ -114,16 +120,15 @@ def get_batch(split):
     ix = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack([data[i:i+block_size] for i in ix])
     y = torch.stack([data[i+1:i+block_size+1] for i in ix])
-    return x, y
-
+    return x.to(device), y.to(device)
 
 @torch.no_grad()
 def estimate_loss():
     out = {}
     model.eval()
     for split in ['train', 'val']:
-        losses = torch.zeros(200)
-        for k in range(200):
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
             X, Y = get_batch(split)
             logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -149,13 +154,12 @@ n = int(0.9 * len(data))
 train_data = data[:n]
 val_data = data[n:]
 
-
 model = GPTLanguageModel(vocab_size)
+model = model.to(device)
 
-optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
-
-for step in range(10000):
-    if step % 1000 == 0:
+optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate)
+for step in range(max_iters):
+    if step % eval_interval == 0:
         losses = estimate_loss()
         print(f"step {step}: train {losses['train']:.4f}, val {losses['val']:.4f}")
     xb, yb = get_batch('train')
@@ -168,5 +172,5 @@ for step in range(10000):
 
 print(loss.item())
 
-idx = torch.zeros((1, 1), dtype=torch.long)
+idx = torch.zeros((1, 1), dtype=torch.long, device=device)
 print(decode(model.generate(idx, max_new_tokens=300)[0].tolist()))

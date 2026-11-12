@@ -28,7 +28,7 @@ _Open questions once answered, with a one-line summary of the resolution and whe
 
 _Non-obvious takeaways worth remembering. "The thing I wish someone had told me."_
 
-- _(none yet)_
+- **RMSNorm = LayerNorm minus the re-centering (and bias).** LN does two things: recenter to mean 0, then rescale to unit variance. RMSNorm keeps only the rescale: `x / sqrt(mean(x²)+eps) * gain`, no mean, no subtraction, no bias. The 2019 ablation showed re-scaling is what gives LN its training-stability benefit; re-centering barely matters — so dropping it costs no quality but saves a reduction, a subtraction, and the bias params at every norm. Confirmed empirically: swapping all 3 LayerNorms → RMSNorm left val loss unchanged (1.62 → 1.61, noise). Used in Llama/T5/Mistral/Qwen. **Theme:** a lot of post-2017 progress is *removing* parts that don't earn their cost (biases are another — Llama drops them almost everywhere), not adding complexity. `nn.Parameter(torch.ones(dim))` init = identity, so the norm starts as pure normalization and learns the gain from there.
 
 ## Experiments
 

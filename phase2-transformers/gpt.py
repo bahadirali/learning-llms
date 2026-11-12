@@ -68,8 +68,8 @@ class Block(nn.Module):
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
         self.ffwd = FeedForward(n_embd)
-        self.ln1 = nn.LayerNorm(n_embd)
-        self.ln2 = nn.LayerNorm(n_embd)
+        self.ln1 = RMSNorm(n_embd)
+        self.ln2 = RMSNorm(n_embd)
 
     def forward(self, x):
         x = x + self.sa(self.ln1(x))     # attention, residual, pre-normed
@@ -83,7 +83,7 @@ class GPTLanguageModel(nn.Module):
         self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(
             *[Block(n_embd, n_head) for _ in range(n_layer)],
-            nn.LayerNorm(n_embd),
+            RMSNorm(n_embd),
         )
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
@@ -113,6 +113,18 @@ class GPTLanguageModel(nn.Module):
             idx = torch.cat((idx, idx_next), dim=1)            # append -> (B, T+1)
         return idx
 
+
+class RMSNorm(nn.Module):
+    def __init__(self, dim, eps=1e-5):
+        super().__init__()
+        self.eps = eps
+        self.gain = nn.Parameter(torch.ones(dim))   # learnable scale, starts as identity
+
+    def forward(self, x):
+        # x is (B, T, dim) — normalize across the last dim (each token's features)
+        rms = (x.pow(2).mean(-1, keepdim=True) + self.eps).sqrt()
+        return x / rms * self.gain
+       
 
 
 def get_batch(split):

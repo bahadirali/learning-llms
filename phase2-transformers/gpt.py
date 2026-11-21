@@ -52,25 +52,25 @@ class MultiHeadAttention(nn.Module):
         out = self.dropout(self.proj(out))
         return out
     
-class FeedForward(nn.Module):
-    def __init__(self, n_embd):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(n_embd, 4 * n_embd),
-            nn.ReLU(),            
-            nn.Linear(4 * n_embd, n_embd),
-            nn.Dropout(dropout),
-        )
+# class FeedForward(nn.Module):
+#     def __init__(self, n_embd):
+#         super().__init__()
+#         self.net = nn.Sequential(
+#             nn.Linear(n_embd, 4 * n_embd),
+#             nn.ReLU(),            
+#             nn.Linear(4 * n_embd, n_embd),
+#             nn.Dropout(dropout),
+#         )
 
-    def forward(self, x):
-        return self.net(x)
+#     def forward(self, x):
+#         return self.net(x)
 
 class Block(nn.Module):
     def __init__(self, n_embd, n_head):
         super().__init__()
         head_size = n_embd // n_head
         self.sa = MultiHeadAttention(n_head, head_size)
-        self.ffwd = FeedForward(n_embd)
+        self.ffwd = SwiGLU(n_embd)
         self.ln1 = RMSNorm(n_embd)
         self.ln2 = RMSNorm(n_embd)
 
@@ -126,6 +126,19 @@ class RMSNorm(nn.Module):
         rms = (x.pow(2).mean(-1, keepdim=True) + self.eps).sqrt()
         return x / rms * self.gain
 
+class SwiGLU(nn.Module):
+    def __init__(self, n_embd):
+        super().__init__()
+        hidden = int(8 * n_embd / 3)              # ~2.67d, keeps params ~matched to the old 4d FFN
+        self.w_gate = nn.Linear(n_embd, hidden, bias=False)
+        self.w_up   = nn.Linear(n_embd, hidden, bias=False)
+        self.w_down = nn.Linear(hidden, n_embd, bias=False)
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        gate = F.silu(self.w_gate(x))             # Swish gate
+        up   = self.w_up(x)
+        return self.dropout(self.w_down(gate * up))
 
 
 def rope_frequencies(head_size, base=10000.0):

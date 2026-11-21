@@ -15,61 +15,49 @@ eval_interval = 500
 eval_iters = 200
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-
-class Head(nn.Module):
-    def __init__(self, head_size):
+class MultiHeadAttention(nn.Module):
+    def __init__(self, n_embd, n_head):
         super().__init__()
-        self.key   = nn.Linear(n_embd, head_size, bias=False)
-        self.query = nn.Linear(n_embd, head_size, bias=False)
-        self.value = nn.Linear(n_embd, head_size, bias=False)
+        self.n_head = n_head
+        self.head_size = n_embd // n_head
+        self.key   = nn.Linear(n_embd, n_embd, bias=False)   # all heads' K in one matrix
+        self.query = nn.Linear(n_embd, n_embd, bias=False)
+        self.value = nn.Linear(n_embd, n_embd, bias=False)
+        self.proj  = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-        self.register_buffer('rope_freqs', rope_frequencies(head_size))
+        self.register_buffer('rope_freqs', rope_frequencies(self.head_size))
 
     def forward(self, x):
         B, T, C = x.shape
-        k = self.key(x)                                   # (B, T, head_size)
-        q = self.query(x)                                 # (B, T, head_size)
-        q = apply_rope(q, self.rope_freqs)                # inject position via rotation
+        q = self.query(x)   # (B, T, C)
+        k = self.key(x)
+        v = self.value(x)
+
+        # split the C channels into (n_head, head_size), move head to its own axis
+        q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, n_head, T, head_size)
+        k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+
+        q = apply_rope(q, self.rope_freqs)
         k = apply_rope(k, self.rope_freqs)
-        wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5
+
+        wei = q @ k.transpose(-2, -1) * self.head_size**-0.5           # (B, n_head, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
-        v = self.value(x)                                 # (B, T, head_size)
-        out = wei @ v                                      # (B, T, head_size)
-        return out
+        out = wei @ v                                                  # (B, n_head, T, head_size)
 
-class MultiHeadAttention(nn.Module):
-    def __init__(self, num_heads, head_size):
-        super().__init__()
-        self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-        self.proj = nn.Linear(n_embd, n_embd)
-        self.dropout = nn.Dropout(dropout)
-
-    def forward(self, x):
-        out = torch.cat([h(x) for h in self.heads], dim=-1)
+        out = out.transpose(1, 2).contiguous().view(B, T, C)          # recombine heads
         out = self.dropout(self.proj(out))
         return out
-    
-# class FeedForward(nn.Module):
-#     def __init__(self, n_embd):
-#         super().__init__()
-#         self.net = nn.Sequential(
-#             nn.Linear(n_embd, 4 * n_embd),
-#             nn.ReLU(),            
-#             nn.Linear(4 * n_embd, n_embd),
-#             nn.Dropout(dropout),
-#         )
 
-#     def forward(self, x):
-#         return self.net(x)
 
 class Block(nn.Module):
     def __init__(self, n_embd, n_head):
         super().__init__()
         head_size = n_embd // n_head
-        self.sa = MultiHeadAttention(n_head, head_size)
+        self.sa = MultiHeadAttention(n_embd, n_head)
         self.ffwd = SwiGLU(n_embd)
         self.ln1 = RMSNorm(n_embd)
         self.ln2 = RMSNorm(n_embd)
@@ -148,7 +136,7 @@ def rope_frequencies(head_size, base=10000.0):
 
 def apply_rope(x, freqs):
     # x: (B, T, head_size); freqs: (head_size/2,)
-    B, T, hs = x.shape
+    T, hs = x.shape[-2], x.shape[-1]
     freqs = freqs.to(x.device)
     pos = torch.arange(T, device=x.device)           # (T,) absolute positions
     angles = pos[:, None] * freqs[None, :]           # (T, hs/2) outer product: m * theta_i

@@ -24,12 +24,15 @@ class Head(nn.Module):
         self.value = nn.Linear(n_embd, head_size, bias=False)
         self.dropout = nn.Dropout(dropout)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
+        self.register_buffer('rope_freqs', rope_frequencies(head_size))
 
     def forward(self, x):
         B, T, C = x.shape
         k = self.key(x)                                   # (B, T, head_size)
         q = self.query(x)                                 # (B, T, head_size)
-        wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5 # (B, T, T)
+        q = apply_rope(q, self.rope_freqs)                # inject position via rotation
+        k = apply_rope(k, self.rope_freqs)
+        wei = q @ k.transpose(-2, -1) * k.shape[-1]**-0.5
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
         wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
@@ -80,7 +83,6 @@ class GPTLanguageModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
-        self.position_embedding_table = nn.Embedding(block_size, n_embd)
         self.blocks = nn.Sequential(
             *[Block(n_embd, n_head) for _ in range(n_layer)],
             RMSNorm(n_embd),
@@ -90,9 +92,8 @@ class GPTLanguageModel(nn.Module):
     def forward(self, idx, targets=None):
         B, T = idx.shape
         tok_emb = self.token_embedding_table(idx)       # (B, T, n_embd)
-        pos_emb = self.position_embedding_table(torch.arange(T, device=device)) # (T, n_embd)
-        x = tok_emb + pos_emb        # (B, T, 32)
-        x = self.blocks(x)           # (B, T, 32) — 3 transformer blocks
+        x = tok_emb                                     # position now comes from RoPE in attention
+        x = self.blocks(x)
         logits = self.lm_head(x)
         if targets is None:
             loss = None
@@ -124,8 +125,27 @@ class RMSNorm(nn.Module):
         # x is (B, T, dim) — normalize across the last dim (each token's features)
         rms = (x.pow(2).mean(-1, keepdim=True) + self.eps).sqrt()
         return x / rms * self.gain
-       
 
+
+
+def rope_frequencies(head_size, base=10000.0):
+    # i = 0, 1, ..., head_size/2 - 1  →  theta_i = base^(-2i/d)
+    i = torch.arange(0, head_size, 2).float()      # 0, 2, 4, ... (length head_size/2)
+    return base ** (-i / head_size)                 # (head_size/2,) the per-pair frequencies
+
+def apply_rope(x, freqs):
+    # x: (B, T, head_size); freqs: (head_size/2,)
+    B, T, hs = x.shape
+    freqs = freqs.to(x.device)
+    pos = torch.arange(T, device=x.device)           # (T,) absolute positions
+    angles = pos[:, None] * freqs[None, :]           # (T, hs/2) outer product: m * theta_i
+    cos, sin = angles.cos(), angles.sin()            # (T, hs/2) each
+
+    x1 = x[..., 0::2]                                # (B, T, hs/2) even coords of each pair
+    x2 = x[..., 1::2]                                # (B, T, hs/2) odd coords
+    out_even = x1 * cos - x2 * sin                   # rotated first coord
+    out_odd  = x1 * sin + x2 * cos                   # rotated second coord
+    return torch.stack([out_even, out_odd], dim=-1).flatten(-2)  # interleave back → (B, T, hs)
 
 def get_batch(split):
     data = train_data if split == 'train' else val_data

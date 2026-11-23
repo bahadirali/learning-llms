@@ -14,15 +14,17 @@ max_iters = 5000
 eval_interval = 500
 eval_iters = 200
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
+n_kv_head = 2        # 6 query heads share 2 KV heads → each KV head serves 3 query heads
 
 class MultiHeadAttention(nn.Module):
     def __init__(self, n_embd, n_head):
         super().__init__()
         self.n_head = n_head
+        self.n_kv_head = n_kv_head
         self.head_size = n_embd // n_head
-        self.key   = nn.Linear(n_embd, n_embd, bias=False)   # all heads' K in one matrix
-        self.query = nn.Linear(n_embd, n_embd, bias=False)
-        self.value = nn.Linear(n_embd, n_embd, bias=False)
+        self.query = nn.Linear(n_embd, n_embd, bias=False)                      # n_head * head_size
+        self.key   = nn.Linear(n_embd, n_kv_head * self.head_size, bias=False)  # fewer KV heads
+        self.value = nn.Linear(n_embd, n_kv_head * self.head_size, bias=False)
         self.proj  = nn.Linear(n_embd, n_embd)
         self.dropout = nn.Dropout(dropout)
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
@@ -34,13 +36,16 @@ class MultiHeadAttention(nn.Module):
         k = self.key(x)
         v = self.value(x)
 
-        # split the C channels into (n_head, head_size), move head to its own axis
-        q = q.view(B, T, self.n_head, self.head_size).transpose(1, 2)  # (B, n_head, T, head_size)
-        k = k.view(B, T, self.n_head, self.head_size).transpose(1, 2)
-        v = v.view(B, T, self.n_head, self.head_size).transpose(1, 2)
+        q = q.view(B, T, self.n_head,    self.head_size).transpose(1, 2)   # (B, n_head,    T, hs)
+        k = k.view(B, T, self.n_kv_head, self.head_size).transpose(1, 2)   # (B, n_kv_head, T, hs)
+        v = v.view(B, T, self.n_kv_head, self.head_size).transpose(1, 2)
 
         q = apply_rope(q, self.rope_freqs)
         k = apply_rope(k, self.rope_freqs)
+
+        n_rep = self.n_head // self.n_kv_head
+        k = k.repeat_interleave(n_rep, dim=1)   # (B, n_head, T, hs) — each KV head copied n_rep times
+        v = v.repeat_interleave(n_rep, dim=1)
 
         wei = q @ k.transpose(-2, -1) * self.head_size**-0.5           # (B, n_head, T, T)
         wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))

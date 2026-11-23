@@ -30,33 +30,41 @@ class MultiHeadAttention(nn.Module):
         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
         self.register_buffer('rope_freqs', rope_frequencies(self.head_size))
 
-    def forward(self, x):
+    def forward(self, x, cache=None):
         B, T, C = x.shape
-        q = self.query(x)   # (B, T, C)
-        k = self.key(x)
-        v = self.value(x)
-
-        q = q.view(B, T, self.n_head,    self.head_size).transpose(1, 2)   # (B, n_head,    T, hs)
-        k = k.view(B, T, self.n_kv_head, self.head_size).transpose(1, 2)   # (B, n_kv_head, T, hs)
+        q = self.query(x); k = self.key(x); v = self.value(x)
+        q = q.view(B, T, self.n_head,    self.head_size).transpose(1, 2)
+        k = k.view(B, T, self.n_kv_head, self.head_size).transpose(1, 2)
         v = v.view(B, T, self.n_kv_head, self.head_size).transpose(1, 2)
 
-        q = apply_rope(q, self.rope_freqs)
-        k = apply_rope(k, self.rope_freqs)
+        offset = cache['k'].shape[2] if (cache is not None and cache['k'] is not None) else 0
+        q = apply_rope(q, self.rope_freqs, offset)
+        k = apply_rope(k, self.rope_freqs, offset)
+
+        if cache is not None:                          # append new K/V to the cache
+            if cache['k'] is not None:
+                k = torch.cat([cache['k'], k], dim=2)
+                v = torch.cat([cache['v'], v], dim=2)
+            cache['k'], cache['v'] = k, v
 
         n_rep = self.n_head // self.n_kv_head
-        k = k.repeat_interleave(n_rep, dim=1)   # (B, n_head, T, hs) — each KV head copied n_rep times
+        k = k.repeat_interleave(n_rep, dim=1)
         v = v.repeat_interleave(n_rep, dim=1)
 
-        wei = q @ k.transpose(-2, -1) * self.head_size**-0.5           # (B, n_head, T, T)
-        wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        wei = q @ k.transpose(-2, -1) * self.head_size**-0.5
+        if cache is None:
+            wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf'))
+        else:
+            Tk = k.shape[2]
+            q_idx = torch.arange(T, device=x.device) + offset   # abs position of each query
+            k_idx = torch.arange(Tk, device=x.device)           # abs position of each key
+            wei = wei.masked_fill(k_idx[None, :] > q_idx[:, None], float('-inf'))
         wei = F.softmax(wei, dim=-1)
         wei = self.dropout(wei)
-        out = wei @ v                                                  # (B, n_head, T, head_size)
-
-        out = out.transpose(1, 2).contiguous().view(B, T, C)          # recombine heads
+        out = wei @ v
+        out = out.transpose(1, 2).contiguous().view(B, T, C)
         out = self.dropout(self.proj(out))
         return out
-
 
 class Block(nn.Module):
     def __init__(self, n_embd, n_head):
@@ -66,27 +74,28 @@ class Block(nn.Module):
         self.ffwd = SwiGLU(n_embd)
         self.ln1 = RMSNorm(n_embd)
         self.ln2 = RMSNorm(n_embd)
-
-    def forward(self, x):
-        x = x + self.sa(self.ln1(x))     # attention, residual, pre-normed
-        x = x + self.ffwd(self.ln2(x))   # feed-forward, residual, pre-normed
+    
+    def forward(self, x, cache=None):
+        x = x + self.sa(self.ln1(x), cache)
+        x = x + self.ffwd(self.ln2(x))
         return x
+
 
 class GPTLanguageModel(nn.Module):
     def __init__(self, vocab_size):
         super().__init__()
         self.token_embedding_table = nn.Embedding(vocab_size, n_embd)
-        self.blocks = nn.Sequential(
-            *[Block(n_embd, n_head) for _ in range(n_layer)],
-            RMSNorm(n_embd),
-        )
+        self.blocks = nn.ModuleList([Block(n_embd, n_head) for _ in range(n_layer)])
+        self.ln_f = RMSNorm(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
 
     def forward(self, idx, targets=None):
         B, T = idx.shape
         tok_emb = self.token_embedding_table(idx)       # (B, T, n_embd)
-        x = tok_emb                                     # position now comes from RoPE in attention
-        x = self.blocks(x)
+        x = tok_emb
+        for block in self.blocks:
+            x = block(x)
+        x = self.ln_f(x)
         logits = self.lm_head(x)
         if targets is None:
             loss = None
@@ -97,14 +106,27 @@ class GPTLanguageModel(nn.Module):
             loss = F.cross_entropy(logits, targets)
         return logits, loss
 
+    @torch.no_grad()
     def generate(self, idx, max_new_tokens):
+        self.eval()
+        caches = [{'k': None, 'v': None} for _ in self.blocks]   # one cache per layer
+
+        # --- prefill: process the whole prompt once, filling every cache ---
+        x = self.token_embedding_table(idx)
+        for block, cache in zip(self.blocks, caches):
+            x = block(x, cache)
+        logits = self.lm_head(self.ln_f(x)[:, -1, :])            # (B, vocab) — last position only
+
+        # --- decode: feed ONLY the new token each step ---
         for _ in range(max_new_tokens):
-            idx_cond = idx[:, -block_size:]       # crop to last block_size tokens
-            logits, loss = self(idx_cond)
-            logits = logits[:, -1, :]             # take last time step -> (B, C)
-            probs = F.softmax(logits, dim=-1)     # (B, C)
-            idx_next = torch.multinomial(probs, num_samples=1) # (B, 1)
-            idx = torch.cat((idx, idx_next), dim=1)            # append -> (B, T+1)
+            probs = F.softmax(logits, dim=-1)
+            idx_next = torch.multinomial(probs, num_samples=1)   # (B, 1)
+            idx = torch.cat((idx, idx_next), dim=1)
+
+            x = self.token_embedding_table(idx_next)             # (B, 1, n_embd) — just the new token
+            for block, cache in zip(self.blocks, caches):
+                x = block(x, cache)                              # cache grows by 1 timestep
+            logits = self.lm_head(self.ln_f(x)[:, -1, :])
         return idx
 
 
@@ -139,19 +161,16 @@ def rope_frequencies(head_size, base=10000.0):
     i = torch.arange(0, head_size, 2).float()      # 0, 2, 4, ... (length head_size/2)
     return base ** (-i / head_size)                 # (head_size/2,) the per-pair frequencies
 
-def apply_rope(x, freqs):
-    # x: (B, T, head_size); freqs: (head_size/2,)
+def apply_rope(x, freqs, offset=0):
     T, hs = x.shape[-2], x.shape[-1]
     freqs = freqs.to(x.device)
-    pos = torch.arange(T, device=x.device)           # (T,) absolute positions
-    angles = pos[:, None] * freqs[None, :]           # (T, hs/2) outer product: m * theta_i
-    cos, sin = angles.cos(), angles.sin()            # (T, hs/2) each
-
-    x1 = x[..., 0::2]                                # (B, T, hs/2) even coords of each pair
-    x2 = x[..., 1::2]                                # (B, T, hs/2) odd coords
-    out_even = x1 * cos - x2 * sin                   # rotated first coord
-    out_odd  = x1 * sin + x2 * cos                   # rotated second coord
-    return torch.stack([out_even, out_odd], dim=-1).flatten(-2)  # interleave back → (B, T, hs)
+    pos = torch.arange(T, device=x.device) + offset        # absolute positions start at offset
+    angles = pos[:, None] * freqs[None, :]
+    cos, sin = angles.cos(), angles.sin()
+    x1, x2 = x[..., 0::2], x[..., 1::2]
+    out_even = x1 * cos - x2 * sin
+    out_odd  = x1 * sin + x2 * cos
+    return torch.stack([out_even, out_odd], dim=-1).flatten(-2)
 
 def get_batch(split):
     data = train_data if split == 'train' else val_data
@@ -211,4 +230,24 @@ for step in range(max_iters):
 print(loss.item())
 
 idx = torch.zeros((1, 1), dtype=torch.long, device=device)
+
+@torch.no_grad()
+def check_cache():
+    model.eval()
+    seq = val_data[:50].unsqueeze(0).to(device)          # (1, 50) a real sequence
+    full_logits, _ = model(seq)                          # all positions at once → (1, 50, vocab)
+
+    caches = [{'k': None, 'v': None} for _ in model.blocks]
+    inc = []
+    for t in range(seq.shape[1]):                        # feed one token at a time (cached path)
+        x = model.token_embedding_table(seq[:, t:t+1])
+        for block, cache in zip(model.blocks, caches):
+            x = block(x, cache)
+        inc.append(model.lm_head(model.ln_f(x))[:, -1, :])
+    inc_logits = torch.stack(inc, dim=1)                 # (1, 50, vocab)
+
+    diff = (full_logits - inc_logits).abs().max().item()
+    print(f"max logit diff (full vs cached): {diff:.2e}")
+check_cache()
+
 print(decode(model.generate(idx, max_new_tokens=300)[0].tolist()))

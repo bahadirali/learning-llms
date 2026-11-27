@@ -39,7 +39,9 @@ Six-phase roadmap. Source PDF: `llm_roadmap.pdf` in the repo root (if committed)
 | 5 | Post-training: SFT, RLHF, DPO, GRPO |
 | 6 | Inference optimization & modern architecture variants |
 
-**Currently in: Phase 2.** (Phase 1 complete.)
+**Currently in: Phase 3.** (Phases 1–2 complete.)
+
+Phase 2 (transformer architecture) done: modernized the Phase-1 GPT into a Llama-style model in `phase2-transformers/gpt.py`, one component at a time — RMSNorm, RoPE, SwiGLU, grouped-query attention, KV cache. Val loss 1.62 → 1.52; insights in `phase2-transformers/notes.md`.
 
 ### Phase 1 plan — DONE
 
